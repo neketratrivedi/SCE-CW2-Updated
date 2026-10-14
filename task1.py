@@ -1,6 +1,10 @@
+import os #added for compatibility with computer folders
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+os.makedirs("outputs", exist_ok=True)
 from itertools import combinations
 
 # dictionaries
