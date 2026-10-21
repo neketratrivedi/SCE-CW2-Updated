@@ -448,3 +448,117 @@ frequent_pairs["lift"] = (
 
 results = frequent_pairs.sort_values("lift", ascending=False).head(20)
 print(results)
+# =====================================================================
+# 1e. TEMPERATURE-ZONE COMBINATIONS
+# =====================================================================
+
+# Lines per order (number of different products in each order)
+lines_per_order = df_lines.groupby("order_id").size().rename("lines")
+df_order = df_order.merge(lines_per_order, left_on="order_id",
+                          right_index=True, how="left")
+
+# Zone combination of each order, e.g. "Ambient + Chilled"
+order_zones = (
+    df_lines.groupby("order_id")["temperature_zone"]
+    .agg(lambda z: " + ".join(sorted(set(z))))
+    .rename("zone_combo")
+)
+df_order = df_order.merge(order_zones, left_on="order_id",
+                          right_index=True, how="left")
+df_order["n_zones"] = df_order["zone_combo"].str.count(r"\+") + 1
+
+# Share of orders per zone combination
+zone_mix = (df_order["zone_combo"].value_counts(normalize=True)
+            .mul(100).round(2).rename("pct_orders").reset_index())
+print("\nShare of orders by zone combination (%):")
+print(zone_mix)
+
+# Share of orders spanning 1, 2 or 3 zones
+print("\nShare of orders by number of zones (%):")
+print(df_order["n_zones"].value_counts(normalize=True).sort_index()
+      .mul(100).round(2))
+
+# Probability that each zone appears in an order
+print("\nProbability each zone appears in an order:")
+for z in ["Ambient", "Chilled", "Frozen"]:
+    share = df_order["zone_combo"].str.contains(z).mean() * 100
+    print(f"  P({z} in order) = {share:.1f}%")
+
+# How the number of zones changes with basket size (lines per order)
+zones_by_size = pd.crosstab(
+    pd.cut(df_order["lines"], bins=[0, 1, 2, 3, 5, 8, 25]),
+    df_order["n_zones"], normalize="index"
+).mul(100).round(1)
+print("\nNumber of zones by basket size (row %):")
+print(zones_by_size)
+
+# Average lines per zone, when that zone is in the order
+lines_per_zone = (df_lines.groupby(["order_id", "temperature_zone"]).size()
+                  .groupby("temperature_zone").mean().round(2))
+print("\nAverage lines per zone (given the zone is in the order):")
+print(lines_per_zone)
+
+zone_mix.plot(x="zone_combo", y="pct_orders", kind="barh", legend=False,
+              xlabel="Orders (%)", ylabel="",
+              title="Temperature-zone mix per order")
+plt.gca().invert_yaxis()
+plt.tight_layout()
+plt.savefig("outputs/1e_zone_mix.png", dpi=150)
+plt.show()
+
+zone_mix.to_csv("outputs/1e_zone_mix.csv", index=False)
+zones_by_size.to_csv("outputs/1e_zones_by_basket_size.csv")
+lines_per_zone.to_csv("outputs/1e_lines_per_zone.csv")
+
+# =====================================================================
+# 1f. ORDER-TO-STAGING (OTS) TIME BUDGET
+# =====================================================================
+# Rule 5 of the brief: latest staged time = placement + promise - est. delivery
+# so the OTS budget (minutes) = promise - estimated_delivery_minutes
+
+promises = [20, 30, 45]
+for p in promises:
+    df_order[f"ots_budget_{p}"] = p - df_order["estimated_delivery_minutes"]
+
+ots_cols = [f"ots_budget_{p}" for p in promises]
+ots_summary = df_order[ots_cols].describe(
+    percentiles=[0.05, 0.25, 0.5, 0.75, 0.95]).T.round(2)
+print("\nOTS budget by promise (minutes):")
+print(ots_summary)
+
+# Share of orders whose budget falls inside each OTS scenario range (v2 brief)
+ots_ranges = {"Fast": (4, 5), "Medium": (5, 7), "Slow": (8, 10)}
+rows = []
+for p in promises:
+    b = df_order[f"ots_budget_{p}"]
+    for name, (lo, hi) in ots_ranges.items():
+        rows.append({"promise_min": p, "ots_scenario": name,
+                     "range_min": f"{lo}-{hi}",
+                     "pct_orders_in_range": round(100 * b.between(lo, hi).mean(), 2)})
+ots_fit = pd.DataFrame(rows)
+print("\nShare of orders inside each OTS scenario range:")
+print(ots_fit)
+
+fig, ax = plt.subplots(figsize=(8, 4.5))
+for p in promises:
+    ax.hist(df_order[f"ots_budget_{p}"], bins=60, alpha=0.5,
+            label=f"{p}-min promise")
+for name, (lo, hi) in ots_ranges.items():
+    ax.axvspan(lo, hi, alpha=0.12)
+    ax.text((lo + hi) / 2, ax.get_ylim()[1] * 0.95, name,
+            ha="center", va="top", fontsize=8)
+ax.set_xlabel("OTS budget (minutes)")
+ax.set_ylabel("Orders")
+ax.set_title("Order-to-staging time budget by delivery promise")
+ax.legend()
+plt.tight_layout()
+plt.savefig("outputs/1f_ots_budget.png", dpi=150)
+plt.show()
+
+ots_summary.to_csv("outputs/1f_ots_budget_summary.csv")
+ots_fit.to_csv("outputs/1f_ots_scenario_fit.csv", index=False)
+df_order[["order_id", "day", "placement_date", "placement_minute",
+          "lines", "zone_combo", "n_zones", "estimated_delivery_minutes",
+          "courier_arrival_offset_minutes"] + ots_cols].to_csv(
+    "outputs/1ef_order_features.csv", index=False)
+print("\nSaved 1e and 1f outputs to the outputs/ folder.")
