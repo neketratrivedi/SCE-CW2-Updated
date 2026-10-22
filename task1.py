@@ -145,8 +145,8 @@ print(df_year.head())
 
 weekday_seasonality = df_days.merge(
     product_stats[["mean_daily"]],
-    on="sku_id",
-    how="left"
+    on_left="sku_id",
+    ight_index=True
 )
 
 weekday_seasonality["relative_demand"] = (
@@ -209,30 +209,215 @@ df_quarter = (
 
 print(df_quarter)
 
+
+# 1a. daily demand estimates
+
+# One row per historical date and SKU
+hist = daily_totals.copy()
+hist["weekday"] = hist["order_date"].dt.dayofweek
+hist["month"] = hist["order_date"].dt.month
+hist["t"] = (
+    hist["order_date"] - hist["order_date"].min()
+).dt.days
+
+# Historical overall mean per SKU
+sku_mean = hist.groupby("sku_id")["demand"].mean()
+
+# Weekday seasonality, normalized around 1
+weekday_factor = (
+    hist.groupby(["sku_id", "weekday"])["demand"].mean()
+    .div(sku_mean, level="sku_id")
+    .rename("weekday_factor")
+    .reset_index()
+)
+
+# Month seasonality, normalized around 1
+month_factor = (
+    hist.groupby(["sku_id", "month"])["demand"].mean()
+    .div(sku_mean, level="sku_id")
+    .rename("month_factor")
+    .reset_index()
+)
+
+# Estimate linear daily trend for each SKU.
+# Express trend relative to the first day of the observed year.
+trend_rows = []
+
+for sku, g in hist.groupby("sku_id"):
+    g = g.sort_values("t")
+    baseline = g["demand"].mean()
+
+    if len(g) >= 2 and g["t"].nunique() >= 2:
+        slope = np.polyfit(g["t"], g["demand"], 1)[0]
+    else:
+        slope = 0.0
+
+    trend_rows.append({
+        "sku_id": sku,
+        "baseline": baseline,
+        "slope_per_day": slope,
+        "first_t": g["t"].min()
+    })
+
+trend = pd.DataFrame(trend_rows)
+
+# Estimate time-varying variability by SKU and calendar month.
+# Fall back to SKU-level standard deviation if needed.
+month_sd = (
+    hist.groupby(["sku_id", "month"])["demand"]
+    .std()
+    .rename("sd_units")
+    .reset_index()
+)
+
+sku_sd = (
+    hist.groupby("sku_id")["demand"]
+    .std()
+    .rename("fallback_sd")
+    .reset_index()
+)
+
+# Forecast the next 365 days after the historical year
+forecast_dates = pd.date_range(
+    hist["order_date"].max() + pd.Timedelta(days=1),
+    periods=365,
+    freq="D"
+)
+
+forecast = pd.MultiIndex.from_product(
+    [hist["sku_id"].unique(), forecast_dates],
+    names=["sku_id", "date"]
+).to_frame(index=False)
+
+forecast["weekday"] = forecast["date"].dt.dayofweek
+forecast["month"] = forecast["date"].dt.month
+forecast["t"] = (
+    forecast["date"] - hist["order_date"].min()
+).dt.days
+
+# Attach the seasonal factors and trend
+forecast = forecast.merge(
+    weekday_factor, on=["sku_id", "weekday"], how="left"
+)
+forecast = forecast.merge(
+    month_factor, on=["sku_id", "month"], how="left"
+)
+forecast = forecast.merge(
+    trend, on="sku_id", how="left"
+)
+
+forecast = forecast.merge(
+    month_sd, on=["sku_id", "month"], how="left"
+)
+forecast = forecast.merge(
+    sku_sd, on="sku_id", how="left"
+)
+
+forecast["weekday_factor"] = forecast["weekday_factor"].fillna(1.0)
+forecast["month_factor"] = forecast["month_factor"].fillna(1.0)
+
+# Relative trend multiplier, clipped to prevent negative or extreme forecasts
+forecast["trend_factor"] = np.where(
+    forecast["baseline"] > 0,
+    1 + forecast["slope_per_day"]
+      * (forecast["t"] - forecast["first_t"])
+      / forecast["baseline"],
+    0.0
+)
+forecast["trend_factor"] = forecast["trend_factor"].clip(0, 3)
+
+forecast["mean_units"] = (
+    forecast["baseline"]
+    * forecast["weekday_factor"]
+    * forecast["month_factor"]
+    * forecast["trend_factor"]
+).clip(lower=0)
+
+forecast["sd_units"] = (
+    forecast["sd_units"]
+    .fillna(forecast["fallback_sd"])
+    .fillna(0)
+    .clip(lower=0)
+)
+
+# Required Phase 2 upload format
+demand_estimates = forecast[
+    ["sku_id", "date", "mean_units", "sd_units"]
+].copy()
+
+demand_estimates["date"] = (
+    demand_estimates["date"].dt.strftime("%Y-%m-%d")
+)
+
+demand_estimates[["mean_units", "sd_units"]] = (
+    demand_estimates[["mean_units", "sd_units"]].round(3)
+)
+
+demand_estimates.to_csv(
+    "outputs/demand_estimates.csv",
+    index=False
+)
+
+print("\nDaily demand estimates saved.")
+print(demand_estimates.head())
+print("Number of SKU-date estimates:", len(demand_estimates))
+
 # analyze orders by day of week and time of day; identify peak days and periods.
 # no sku, just time analysis
 
 print(daily_demand.head())
 
-demand_per_day = (
-    daily_demand
-    .groupby(["weekday"], as_index=False)["demand"]
+# Average total units demanded per calendar day of the week
+# Total units demanded per calendar date
+total_demand_per_date = (
+    daily_totals.groupby("order_date")["demand"]
     .sum()
+    .rename("total_demand")
+    .reset_index()
 )
 
+total_demand_per_date["weekday"] = (
+    total_demand_per_date["order_date"].dt.dayofweek
+)
 
+demand_per_day = (
+    total_demand_per_date.groupby("weekday")["total_demand"]
+    .mean()
+    .reindex(range(7), fill_value=0)
+    .rename("mean_daily_demand")
+    .reset_index()
+)
+
+# Average units demanded per hour across the observed dates
 demand_per_hour = (
     daily_demand
-    .groupby(["hour"], as_index=False)["demand"]
+    .groupby(["order_date", "hour"])["demand"]
     .sum()
+    .groupby("hour")
+    .mean()
+    .reindex(range(24), fill_value=0)
+    .rename("mean_hourly_demand")
+    .reset_index()
 )
 
+max_demand_day = demand_per_day.loc[
+    demand_per_day["mean_daily_demand"].idxmax()
+]
 
-max_demand_day = demand_per_day.loc[demand_per_day["demand"].idxmax()]
-max_demand_hour = demand_per_hour.loc[demand_per_hour["demand"].idxmax()]
+max_demand_hour = demand_per_hour.loc[
+    demand_per_hour["mean_hourly_demand"].idxmax()
+]
 
-print(f"Peak demand day: {max_demand_day['weekday']} with demand {max_demand_day['demand']}")
-print(f"Peak demand hour: {max_demand_hour['hour']} with demand {max_demand_hour['demand']}")
+print(
+    f"Peak demand weekday: "
+    f"{weekday_names[max_demand_day['weekday']]} "
+    f"({max_demand_day['mean_daily_demand']:.2f} units/day)"
+)
+
+print(
+    f"Peak demand hour: {max_demand_hour['hour']}:00 "
+    f"({max_demand_hour['mean_hourly_demand']:.2f} units/hour)"
+)
 
 
 # peak analysis
@@ -275,19 +460,34 @@ peak_days.plot(
 plt.tight_layout()
 plt.show()
 
+# Complete date x hour grid, including zero-order hours
+all_dates = pd.date_range(
+    df_order["order_date"].min(),
+    df_order["order_date"].max(),
+    freq="D"
+)
 
 hourly_counts = (
     df_order.groupby(["order_date", "hour"])
     .size()
-    .reset_index(name="orders")
+    .reindex(
+        pd.MultiIndex.from_product(
+            [all_dates, range(24)],
+            names=["order_date", "hour"]
+        ),
+        fill_value=0
+    )
+    .rename("orders")
+    .reset_index()
 )
 
 peak_hours = (
     hourly_counts.groupby("hour")["orders"]
     .mean()
-    .reindex(range(24), fill_value=0)
     .reset_index(name="mean_orders")
 )
+
+
 
 print(peak_hours.sort_values("mean_orders", ascending=False))
 
@@ -310,12 +510,21 @@ df_order["period"] = pd.cut(
             "Afternoon (12–17)", "Evening (18–23)"]
 )
 
+# Complete date x period grid, including zero-order periods
+period_labels = df_order["period"].cat.categories
+
 period_counts = (
-    df_order.groupby(
-        ["order_date", "period"], observed=False
-    )
+    df_order.groupby(["order_date", "period"], observed=False)
     .size()
-    .reset_index(name="orders")
+    .reindex(
+        pd.MultiIndex.from_product(
+            [all_dates, period_labels],
+            names=["order_date", "period"]
+        ),
+        fill_value=0
+    )
+    .rename("orders")
+    .reset_index()
 )
 
 peak_periods = (
@@ -388,6 +597,42 @@ basket_distribution.plot(
 plt.tight_layout()
 plt.show()
 
+# Validate basket size against order-line quantities
+actual_basket_units = (
+    df_lines.groupby("order_id")["quantity"]
+    .sum()
+    .rename("calculated_basket_units")
+)
+
+basket_check = df_order[
+    ["order_id", "basket_size_units"]
+].merge(
+    actual_basket_units,
+    on="order_id",
+    how="left",
+    validate="one_to_one"
+)
+
+basket_check["difference"] = (
+    basket_check["basket_size_units"]
+    - basket_check["calculated_basket_units"]
+)
+
+print(
+    "Orders with inconsistent basket sizes:",
+    (basket_check["difference"] != 0).sum()
+)
+
+basket_check.to_csv(
+    "outputs/1c_basket_size_validation.csv",
+    index=False
+)
+
+basket_distribution.to_csv(
+    "outputs/1c_basket_size_distribution.csv",
+    index=False
+)
+
 # products ordered together 
 
 basket_skus = (
@@ -448,6 +693,28 @@ frequent_pairs["lift"] = (
 
 results = frequent_pairs.sort_values("lift", ascending=False).head(20)
 print(results)
+
+
+# Filter product associations with sufficient co-occurrence
+MIN_PAIR_ORDERS = 20
+
+reliable_pairs = frequent_pairs.loc[
+    frequent_pairs["orders_together"] >= MIN_PAIR_ORDERS
+].copy()
+
+reliable_pairs = reliable_pairs.sort_values(
+    ["lift", "orders_together"],
+    ascending=[False, False]
+)
+
+print("\nMost meaningful product associations:")
+print(reliable_pairs.head(20))
+
+reliable_pairs.to_csv(
+    "outputs/1d_reliable_product_pairs.csv",
+    index=False
+)
+
 # =====================================================================
 # 1e. TEMPERATURE-ZONE COMBINATIONS
 # =====================================================================
@@ -477,6 +744,34 @@ print(zone_mix)
 print("\nShare of orders by number of zones (%):")
 print(df_order["n_zones"].value_counts(normalize=True).sort_index()
       .mul(100).round(2))
+
+
+# Full probability distribution of the number of zones
+zone_count_distribution = (
+    df_order["n_zones"]
+    .value_counts(normalize=True)
+    .sort_index()
+    .rename_axis("n_zones")
+    .reset_index(name="probability")
+)
+
+zone_count_distribution["percentage"] = (
+    zone_count_distribution["probability"] * 100
+)
+
+zone_count_distribution.to_csv(
+    "outputs/1e_zone_count_probabilities.csv",
+    index=False
+)
+
+# Save exact temperature-zone combination probabilities
+zone_mix["probability"] = zone_mix["pct_orders"] / 100
+
+zone_mix.to_csv(
+    "outputs/1e_zone_combination_probabilities.csv",
+    index=False
+)
+
 
 # Probability that each zone appears in an order
 print("\nProbability each zone appears in an order:")
@@ -525,6 +820,21 @@ ots_summary = df_order[ots_cols].describe(
     percentiles=[0.05, 0.25, 0.5, 0.75, 0.95]).T.round(2)
 print("\nOTS budget by promise (minutes):")
 print(ots_summary)
+
+# OTS feasibility diagnostics
+for p in promises:
+    col = f"ots_budget_{p}"
+
+    negative_share = (df_order[col] < 0).mean() * 100
+
+    print(
+        f"{p}-minute promise: {negative_share:.2f}% "
+        "of orders have negative OTS budgets"
+    )
+
+    print(
+        f"  Missing budgets: {df_order[col].isna().sum()}"
+    )
 
 # Share of orders whose budget falls inside each OTS scenario range (v2 brief)
 ots_ranges = {"Fast": (4, 5), "Medium": (5, 7), "Slow": (8, 10)}
