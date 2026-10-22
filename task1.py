@@ -166,7 +166,8 @@ print(weekday_seasonality)
 
 monthly_seasonality = df_month.merge(
     product_stats[["mean_daily"]],
-    on="sku_id",
+    left_on="sku_id",
+    right_index=True,
     how="left"
 )
 
