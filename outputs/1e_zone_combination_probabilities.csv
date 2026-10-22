@@ -1,0 +1,8 @@
+zone_combo,pct_orders,probability
+Ambient,43.63,0.4363
+Ambient + Chilled,30.95,0.3095
+Ambient + Frozen,13.09,0.1309
+Ambient + Chilled + Frozen,9.72,0.09720000000000001
+Chilled,1.42,0.014199999999999999
+Chilled + Frozen,0.6,0.006
+Frozen,0.59,0.0059

@@ -1,0 +1,10 @@
+promise_min,ots_scenario,range_min,pct_orders_in_range
+20,Fast,4-5,0.88
+20,Medium,5-7,33.51
+20,Slow,8-10,24.26
+30,Fast,4-5,0.0
+30,Medium,5-7,0.0
+30,Slow,8-10,0.0
+45,Fast,4-5,0.0
+45,Medium,5-7,0.0
+45,Slow,8-10,0.0

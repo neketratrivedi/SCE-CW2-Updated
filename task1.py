@@ -145,8 +145,9 @@ print(df_year.head())
 
 weekday_seasonality = df_days.merge(
     product_stats[["mean_daily"]],
-    on_left="sku_id",
-    ight_index=True
+    left_on="sku_id",
+    right_index=True,
+    how="left"
 )
 
 weekday_seasonality["relative_demand"] = (
