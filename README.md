@@ -148,9 +148,9 @@ statistics and the share of budgets that are negative or missing.
 The script also compares budgets with the ranges currently defined in
 the code:
 
--   Fast: 4--5 minutes
--   Medium: 5--7 minutes
--   Slow: 8--10 minutes
+-   20 minutes
+-   30 minutes
+-   40 minutes
 
 **Important interpretation caution:** the same ranges are applied to
 each of the three delivery-promise durations. These percentages should
@@ -215,9 +215,6 @@ console summaries and interactive plots are also produced):
                                             and OTS fields.
   -----------------------------------------------------------------------------
 
-The script may be updated over time, so the exact outputs depend on the
-version being run. If a listed output is not generated, check that the
-corresponding code block executes and that the input data contains the
-expected columns.
+
 
 
